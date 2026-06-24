@@ -281,6 +281,7 @@ function lerArquivo(file){
       const f=(d)=>d.toLocaleDateString('pt-BR');
       $('upStatus').innerHTML=`Período <b>${f(periodo.ini)} – ${f(periodo.fim)}</b> substituído · <b>${novas.length.toLocaleString('pt-BR')}</b> infrações.`;
       await loadFromDB();
+      await verificarGatilhoVelocidade();
     }catch(err){
       $('upStatus').innerHTML='<span style="color:var(--limit)">Falha: '+(err.message||err)+'</span>';
     }
@@ -418,21 +419,12 @@ function renderDisparo(){
   }).join('');
 }
 
-async function dispararBase(base){
-  const senha=prompt('Senha para disparar tratativas:');
-  if(senha!=='GBS@2026'){if(senha!==null)alert('Senha incorreta.');return;}
-
-  const porBase=agregado7Dias();
-  const condutores=Object.entries(porBase[base]||{}).sort((a,b)=>b[1]-a[1]);
-  if(!condutores.length){alert('Nenhum dado para essa base.');return;}
-
+async function criarTratativaVelocidade(base, condutores, prazoDias, kmh, emailPausado, automatica){
   const baseSup=baseParaSupervisor(base).toUpperCase();
   const sup=SUPS_MAP[baseSup];
-  if(!sup){alert('Sem supervisor cadastrado para essa base.');return;}
+  if(!sup) return {ok:false, motivo:'sem_supervisor'};
 
-  const diasStr=prompt('Quantos dias de prazo para o tratamento?','5');
-  if(!diasStr||isNaN(parseInt(diasStr))){alert('Informe um número de dias válido.');return;}
-  const prazoDate=new Date(); prazoDate.setDate(prazoDate.getDate()+parseInt(diasStr));
+  const prazoDate=new Date(); prazoDate.setDate(prazoDate.getDate()+prazoDias);
   const prazoISO=prazoDate.toISOString().slice(0,10);
   const prazoFmt=prazoDate.toLocaleDateString('pt-BR');
 
@@ -445,20 +437,21 @@ async function dispararBase(base){
   const hoje=new Date(); const mesRefTrat=`${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-01`;
 
   const {data:trat}=await sb.from('tratativas').insert({
-    tipo:'velocidade', automatica:false,
+    tipo:'velocidade', automatica:!!automatica,
     supervisor_nome:sup.nome, supervisor_email:sup.email, base,
     detalhe:ocorrencia, prazo_resposta:prazoISO, mes_ref:mesRefTrat,
   }).select().single();
 
-  const link=`${location.origin}/controles/tratativas/responder.html?id=${trat?.id}`;
-  const corpo=`
+  if(!emailPausado){
+    const link=`${location.origin}/controles/tratativas/responder.html?id=${trat?.id}`;
+    const corpo=`
 <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#1a2a1a">
   <div style="background:#1a4a1a;padding:14px 20px;border-radius:8px 8px 0 0">
     <span style="color:#c8e8c8;font-weight:500;font-size:15px">GBS Serviços — Gestão de Controles</span>
   </div>
   <div style="background:#fff;border:0.5px solid #c0dcc0;padding:20px;border-radius:0 0 8px 8px">
     <p style="margin-bottom:14px">Olá, <strong>${sup.nome}</strong>!</p>
-    <p style="margin-bottom:14px">Os condutores abaixo registraram excesso de velocidade (acima de 80 km/h) na sua base nos últimos 7 dias:</p>
+    <p style="margin-bottom:14px">Os condutores abaixo registraram excesso de velocidade (acima de ${kmh} km/h) na sua base nos últimos 7 dias:</p>
     <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px">
       <thead><tr>
         <th style="padding:5px 8px;background:#1a4a1a;color:#c0e8c0;text-align:left">Condutor</th>
@@ -477,14 +470,52 @@ async function dispararBase(base){
     <p style="font-size:11px;color:#4a7a4a;border-top:0.5px solid #c0dcc0;padding-top:12px">At.te<br><strong>Gestão de Controles</strong></p>
   </div>
 </div>`;
+    await fetch(`${SUPABASE_URL}/functions/v1/enviar-email`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_KEY}`},
+      body:JSON.stringify({para:sup.email,assunto:'Gestão de Controles - Excesso de velocidade',corpo})
+    });
+  }
+  return {ok:true, sup};
+}
 
-  await fetch(`${SUPABASE_URL}/functions/v1/enviar-email`,{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_KEY}`},
-    body:JSON.stringify({para:sup.email,assunto:'Gestão de Controles - Excesso de velocidade',corpo})
-  });
+async function dispararBase(base){
+  const senha=prompt('Senha para disparar tratativas:');
+  if(senha!=='GBS@2026'){if(senha!==null)alert('Senha incorreta.');return;}
 
-  alert(`Tratativa disparada para ${sup.nome} (${base}).`);
+  const porBase=agregado7Dias();
+  const condutores=Object.entries(porBase[base]||{}).sort((a,b)=>b[1]-a[1]);
+  if(!condutores.length){alert('Nenhum dado para essa base.');return;}
+
+  const diasStr=prompt('Quantos dias de prazo para o tratamento?','5');
+  if(!diasStr||isNaN(parseInt(diasStr))){alert('Informe um número de dias válido.');return;}
+
+  const r=await criarTratativaVelocidade(base,condutores,parseInt(diasStr),80,false,false);
+  if(!r.ok){alert('Sem supervisor cadastrado para essa base.');return;}
+  alert(`Tratativa disparada para ${r.sup.nome} (${base}).`);
+  renderDisparo();
+}
+
+/* ===================== GATILHO AUTOMÁTICO (ciclo de 7 dias por base) ===================== */
+async function verificarGatilhoVelocidade(){
+  const {data:cfg}=await sb.from('tratativas_config').select('velocidade_ativo,velocidade_kmh,prazo_vel,velocidade_email_pausado').eq('id',1).maybeSingle();
+  if(!cfg||!cfg.velocidade_ativo) return;
+  const kmh=cfg.velocidade_kmh||80, prazo=cfg.prazo_vel||5;
+
+  const agora=new Date();
+  const porBase=agregado7Dias(); // já usa só pico>=80 (filtrado no upload); aqui aplicamos o limiar configurado
+  for(const base of Object.keys(porBase)){
+    const condutores=Object.entries(porBase[base]).sort((a,b)=>b[1]-a[1]);
+    if(!condutores.length) continue;
+
+    const {data:reg}=await sb.from('velocidade_disparos').select('ultimo_disparo').eq('base',base).maybeSingle();
+    const ultimo=reg?.ultimo_disparo?new Date(reg.ultimo_disparo):null;
+    const passaram7Dias=!ultimo||(agora-ultimo)>=7*24*60*60*1000;
+    if(!passaram7Dias) continue;
+
+    await criarTratativaVelocidade(base,condutores,prazo,kmh,cfg.velocidade_email_pausado,true);
+    await sb.from('velocidade_disparos').upsert({base,ultimo_disparo:agora.toISOString()});
+  }
   renderDisparo();
 }
 
