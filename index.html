@@ -175,6 +175,11 @@ const $=(id)=>document.getElementById(id);
 
 let PERFIL_BASE=null, PERFIL_TIPO=null;
 let SUPS_MAP={}; // base (uppercase) -> {nome,email}
+let TST_MAP={}; // base (uppercase) -> {nome,email} do TST responsável
+const TST_BASES={
+  'tst_passos':['Guaxupé','Passos','SSP'],
+  'tst_pouso_alegre':['Pouso Alegre','Alfenas','Ouro Fino','Andradas']
+};
 const BASE_ALIAS={'sao sebastiao do paraiso':'SSP'}; // nomes da planilha InoPrime -> nome usado no resto do sistema
 function baseParaSupervisor(base){
   const semAcento=(base||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -407,13 +412,13 @@ function renderDisparo(){
     const condutores=Object.entries(porBase[base]).sort((a,b)=>b[1]-a[1]);
     const total=condutores.reduce((s,[,c])=>s+c,0);
     const baseSup=baseParaSupervisor(base).toUpperCase();
-    const sup=SUPS_MAP[baseSup];
+    const tst=TST_MAP[baseSup];
     return `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:0.5px solid var(--line)">
       <div>
         <strong>${base}</strong> <span class="muted" style="font-size:13px">— ${condutores.length} condutor(es), ${total} infrações</span>
-        ${sup?'':'<div style="font-size:12px;color:var(--limit)">Sem supervisor cadastrado para essa base</div>'}
+        ${tst?'':'<div style="font-size:12px;color:var(--limit)">Sem TST cadastrado para essa base</div>'}
       </div>
-      <button onclick="dispararBase('${base.replace(/'/g,"\\'")}')" ${sup?'':'disabled'}
+      <button onclick="dispararBase('${base.replace(/'/g,"\\'")}')" ${tst?'':'disabled'}
         style="background:var(--brand);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer">✈️ Disparar</button>
     </div>`;
   }).join('');
@@ -421,8 +426,9 @@ function renderDisparo(){
 
 async function criarTratativaVelocidade(base, condutores, prazoDias, kmh, emailPausado, automatica){
   const baseSup=baseParaSupervisor(base).toUpperCase();
-  const sup=SUPS_MAP[baseSup];
-  if(!sup) return {ok:false, motivo:'sem_supervisor'};
+  const tst=TST_MAP[baseSup];
+  if(!tst) return {ok:false, motivo:'sem_tst'};
+  const sup=SUPS_MAP[baseSup]; // só pra cópia informativa, opcional
 
   const prazoDate=new Date(); prazoDate.setDate(prazoDate.getDate()+prazoDias);
   const prazoISO=prazoDate.toISOString().slice(0,10);
@@ -436,9 +442,10 @@ async function criarTratativaVelocidade(base, condutores, prazoDias, kmh, emailP
   const ocorrencia=`${condutores.length} condutor(es) com excesso de velocidade na base ${base} nos últimos 7 dias (${total} infrações). Condutores: ${condutores.map(([n,c])=>`${n} (${c})`).join(', ')}`;
   const hoje=new Date(); const mesRefTrat=`${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-01`;
 
+  // TST é o responsável oficial pela tratativa (quem responde)
   const {data:trat}=await sb.from('tratativas').insert({
     tipo:'velocidade', automatica:!!automatica,
-    supervisor_nome:sup.nome, supervisor_email:sup.email, base,
+    supervisor_nome:tst.nome, supervisor_email:tst.email, base,
     detalhe:ocorrencia, prazo_resposta:prazoISO, mes_ref:mesRefTrat,
   }).select().single();
 
@@ -450,8 +457,8 @@ async function criarTratativaVelocidade(base, condutores, prazoDias, kmh, emailP
     <span style="color:#c8e8c8;font-weight:500;font-size:15px">GBS Serviços — Gestão de Controles</span>
   </div>
   <div style="background:#fff;border:0.5px solid #c0dcc0;padding:20px;border-radius:0 0 8px 8px">
-    <p style="margin-bottom:14px">Olá, <strong>${sup.nome}</strong>!</p>
-    <p style="margin-bottom:14px">Os condutores abaixo registraram excesso de velocidade (acima de ${kmh} km/h) na sua base nos últimos 7 dias:</p>
+    <p style="margin-bottom:14px">Olá, <strong>${tst.nome}</strong>!</p>
+    <p style="margin-bottom:14px">Os condutores abaixo registraram excesso de velocidade (acima de ${kmh} km/h) na base <strong>${base}</strong> nos últimos 7 dias:</p>
     <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px">
       <thead><tr>
         <th style="padding:5px 8px;background:#1a4a1a;color:#c0e8c0;text-align:left">Condutor</th>
@@ -473,10 +480,41 @@ async function criarTratativaVelocidade(base, condutores, prazoDias, kmh, emailP
     await fetch(`${SUPABASE_URL}/functions/v1/enviar-email`,{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_KEY}`},
-      body:JSON.stringify({para:sup.email,assunto:'Gestão de Controles - Excesso de velocidade',corpo})
+      body:JSON.stringify({para:tst.email,assunto:'Gestão de Controles - Excesso de velocidade',corpo})
     });
+
+    // Supervisor da base recebe só uma cópia informativa (não responde, só acompanha)
+    if(sup){
+      const corpoSup=`
+<div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#1a2a1a">
+  <div style="background:#1a4a1a;padding:14px 20px;border-radius:8px 8px 0 0">
+    <span style="color:#c8e8c8;font-weight:500;font-size:15px">GBS Serviços — Gestão de Controles</span>
+  </div>
+  <div style="background:#fff;border:0.5px solid #c0dcc0;padding:20px;border-radius:0 0 8px 8px">
+    <p style="margin-bottom:14px">Olá, <strong>${sup.nome}</strong>!</p>
+    <p style="margin-bottom:14px">Os condutores abaixo registraram excesso de velocidade (acima de ${kmh} km/h) na sua base nos últimos 7 dias. O técnico de segurança (${tst.nome}) já foi notificado e é responsável por tratar este caso — esse e-mail é só pra você acompanhar.</p>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px">
+      <thead><tr>
+        <th style="padding:5px 8px;background:#1a4a1a;color:#c0e8c0;text-align:left">Condutor</th>
+        <th style="padding:5px 8px;background:#1a4a1a;color:#c0e8c0;text-align:center">Infrações</th>
+      </tr></thead>
+      <tbody>${linhasCond}</tbody>
+    </table>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:13px">
+      <tr><td style="padding:6px 10px;border:0.5px solid #c0dcc0;background:#f8fbf8;font-weight:500;width:35%">Base</td><td style="padding:6px 10px;border:0.5px solid #c0dcc0">${base}</td></tr>
+      <tr><td style="padding:6px 10px;border:0.5px solid #c0dcc0;background:#f8fbf8;font-weight:500">Total de infrações</td><td style="padding:6px 10px;border:0.5px solid #c0dcc0">${total}</td></tr>
+    </table>
+    <p style="font-size:11px;color:#4a7a4a;border-top:0.5px solid #c0dcc0;padding-top:12px">At.te<br><strong>Gestão de Controles</strong></p>
+  </div>
+</div>`;
+      await fetch(`${SUPABASE_URL}/functions/v1/enviar-email`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_KEY}`},
+        body:JSON.stringify({para:sup.email,assunto:'Gestão de Controles - Excesso de velocidade (acompanhamento)',corpo:corpoSup})
+      });
+    }
   }
-  return {ok:true, sup};
+  return {ok:true, sup:tst};
 }
 
 async function dispararBase(base){
@@ -491,7 +529,7 @@ async function dispararBase(base){
   if(!diasStr||isNaN(parseInt(diasStr))){alert('Informe um número de dias válido.');return;}
 
   const r=await criarTratativaVelocidade(base,condutores,parseInt(diasStr),80,false,false);
-  if(!r.ok){alert('Sem supervisor cadastrado para essa base.');return;}
+  if(!r.ok){alert('Sem TST cadastrado para essa base.');return;}
   alert(`Tratativa disparada para ${r.sup.nome} (${base}).`);
   renderDisparo();
 }
@@ -536,6 +574,12 @@ async function verificarGatilhoVelocidade(){
 
     const {data:sups}=await sb.from('usuarios_portal').select('nome,email,base').eq('perfil','supervisor').eq('ativo',true);
     (sups||[]).forEach(s=>{ if(s.base) SUPS_MAP[s.base.toUpperCase()]={nome:s.nome,email:s.email}; });
+
+    const {data:tsts}=await sb.from('usuarios_portal').select('nome,email,perfil').in('perfil',['tst_passos','tst_pouso_alegre']).eq('ativo',true);
+    (tsts||[]).forEach(t=>{
+      const lista=TST_BASES[t.perfil]||[];
+      lista.forEach(b=>{ TST_MAP[b.toUpperCase()]={nome:t.nome,email:t.email}; });
+    });
   }
 
   ligarRealtime();
