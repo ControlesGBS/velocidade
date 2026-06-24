@@ -498,7 +498,7 @@ async function dispararBase(base){
 
 /* ===================== GATILHO AUTOMÁTICO (ciclo de 7 dias por base) ===================== */
 async function verificarGatilhoVelocidade(){
-  const {data:cfg}=await sb.from('tratativas_config').select('velocidade_ativo,velocidade_kmh,prazo_vel,velocidade_email_pausado').eq('id',1).maybeSingle();
+  const {data:cfg}=await sb.from('tratativas_config').select('velocidade_ativo,velocidade_kmh,prazo_vel,velocidade_email_pausado').maybeSingle();
   if(!cfg||!cfg.velocidade_ativo) return;
   const kmh=cfg.velocidade_kmh||80, prazo=cfg.prazo_vel||5;
 
