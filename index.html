@@ -111,7 +111,7 @@
 
       <div class="slider">
         <label>Pico a partir de</label>
-        <input type="range" min="40" max="140" value="80" step="1" id="thr">
+        <input type="range" min="80" max="140" value="80" step="1" id="thr">
         <span class="out" id="thrOut">80 km/h</span>
       </div>
 
@@ -240,7 +240,9 @@ function lerArquivo(file){
       for(let i=hIdx+1;i<rows.length;i++){
         const r=rows[i]; if(!r||!r[cV]) continue;
         const dataStr=r[cDt], dt=parseBR(dataStr); if(!dt) continue;
-        novas.push({placa:r[cV],condutor:condutorDe(r[cD]),base:titulo(r[cG]),pico:Number(r[cP])||0,dt,data_br:String(dataStr),endereco:r[cE]||''});
+        const pico=Number(r[cP])||0;
+        if(pico<80) continue; // abaixo do limite, não é infração relevante — não grava
+        novas.push({placa:r[cV],condutor:condutorDe(r[cD]),base:titulo(r[cG]),pico,dt,data_br:String(dataStr),endereco:r[cE]||''});
       }
       if(!novas.length) throw new Error('Nenhuma linha de dados encontrada');
       if(!periodo){const ds=novas.map(n=>+n.dt);periodo={ini:new Date(Math.min(...ds)),fim:new Date(Math.max(...ds))};}
